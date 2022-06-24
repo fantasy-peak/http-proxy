@@ -297,7 +297,7 @@ int main(int argc, char** argv) {
 		boost::asio::ip::tcp::endpoint endpoint = *resolver.resolve(FLAGS_host, std::to_string(FLAGS_port)).begin();
 		std::stringstream ss;
 		ss << endpoint;
-		spdlog::debug("start accept at {} ...", ss.str());
+		spdlog::info("start accept at {} ...", ss.str());
 		acceptor.open(endpoint.protocol());
 		acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
 		acceptor.bind(endpoint);
