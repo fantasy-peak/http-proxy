@@ -1,11 +1,11 @@
-cmake_minimum_required(VERSION 3.13.0)
+cmake_minimum_required(VERSION 3.23.0)
 
 project(http-proxy)
 
 set(CMAKE_CXX_STANDARD 20)
 
 set(OPTFLAGS -gdwarf-2)
-set(WARNINGS -Wall -Wno-missing-field-initializers -Wno-ignored-qualifiers -g)
+set(WARNINGS -Wall -Wno-missing-field-initializers -Wno-ignored-qualifiers)
 add_compile_options(${OPTFLAGS} ${WARNINGS})
 
 if(NOT EXISTS "${CMAKE_BINARY_DIR}/xrepo.cmake")
@@ -22,7 +22,10 @@ set(XREPO_BUILD_PARALLEL_JOBS 12)
 
 include(${CMAKE_BINARY_DIR}/xrepo.cmake)
 
-execute_process(COMMAND xmake repo -a -g my_private_repo https://github.com/fantasy-peak/xmake-repo.git)
+if(NOT EXISTS "$ENV{HOME}/.xmake/repositories/my_private_repo/xmake.lua")
+    message(STATUS "add my_private_repo https://github.com/fantasy-peak/xmake-repo.git")
+    execute_process(COMMAND xmake repo -a -g my_private_repo https://github.com/fantasy-peak/xmake-repo.git)
+endif()
 
 #----------------------------------------------------------------------------------
 
