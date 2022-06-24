@@ -15,6 +15,7 @@ DEFINE_int32(port, 8849, "http proxy port");
 DEFINE_int32(timeout, 5000, "connect timeout ms");
 DEFINE_int32(threads, std::thread::hardware_concurrency(), "work threads");
 DEFINE_bool(open_file_log, false, "open file log");
+DEFINE_int32(log_level, 1, "default info level");
 
 const char NameValueSeparator[] = {':', ' '};
 const char Crlf[] = {'\r', '\n'};
@@ -113,7 +114,7 @@ struct HttpRequestPacket {
 	bool parse() {
 		auto i0 = req_data.find("\r\n");
 		std::string req_line = req_data.substr(0, i0);
-		spdlog::info("req_line:  [{}]", req_line);
+		spdlog::debug("req_line:  [{}]", req_line);
 		std::vector<std::string> method_uri_http_version;
 		boost::algorithm::split(method_uri_http_version, req_line, boost::is_any_of(" "), boost::token_compress_on);
 		if (method_uri_http_version.size() != 3)
@@ -121,12 +122,12 @@ struct HttpRequestPacket {
 		method = std::move(method_uri_http_version.at(0));
 		req_uri = std::move(method_uri_http_version.at(1));
 		version = std::move(method_uri_http_version.at(2));
-		spdlog::info("method:  [{}]", method);
-		spdlog::info("req_uri: [{}]", req_uri);
-		spdlog::info("version: [{}]", version);
+		spdlog::debug("method:  [{}]", method);
+		spdlog::debug("req_uri: [{}]", req_uri);
+		spdlog::debug("version: [{}]", version);
 		auto i1 = req_data.find("\r\n\r\n");
 		auto req_header = req_data.substr(i0 + 2, i1 - i0 - 2);
-		spdlog::info("req_header: [{}]", req_header);
+		spdlog::debug("req_header: [{}]", req_header);
 		for (auto header_lines = split(req_header, "\r\n"); auto& header_line : header_lines) {
 			std::vector<std::string> tmp = split(header_line, ": ");
 			if (tmp.size() != 2)
@@ -134,9 +135,9 @@ struct HttpRequestPacket {
 			headers.emplace(std::move(tmp.at(0)), std::move(tmp.at(1)));
 		}
 		host = headers.at("Host");
-		spdlog::info("host: [{}]", host);
+		spdlog::debug("host: [{}]", host);
 		req_data = req_data.substr(i1 + 4);
-		spdlog::info("req_data: [{}]", req_data);
+		spdlog::debug("req_data: [{}]", req_data);
 		return true;
 	}
 
@@ -185,7 +186,7 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 		co_return;
 	}
 
-	spdlog::info("{}", http_header_str);
+	spdlog::debug("{}", http_header_str);
 
 	auto http_packet = HttpRequestPacket(http_header_str);
 	if (auto ret = http_packet.parse(); !ret) {
@@ -206,7 +207,7 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 		server_host = http_packet.host;
 		server_port = "80";
 	}
-	spdlog::info("server_host: [{}], server_port: [{}]", server_host, server_port);
+	spdlog::debug("server_host: [{}], server_port: [{}]", server_host, server_port);
 	auto split_uri_ret = split(http_packet.req_uri, "//");
 	auto str = fmt::format("{}//{}", split_uri_ret.at(0), http_packet.host);
 	boost::algorithm::replace_first(http_header_str, str, "");
@@ -229,14 +230,14 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 		close(client_socket_ptr, server_socket_ptr);
 		co_return;
 	}
-	spdlog::info("resolver_results size: [{}]", resolver_results.size());
+	spdlog::debug("resolver_results size: [{}]", resolver_results.size());
 	for (auto& endpoint : resolver_results) {
 		std::stringstream ss;
 		ss << endpoint.endpoint();
-		spdlog::info("resolver_results: [{}]", ss.str());
+		spdlog::debug("resolver_results: [{}]", ss.str());
 	}
 
-	spdlog::info("async_connect: [{}:{}]", server_host, server_port);
+	spdlog::debug("async_connect: [{}:{}]", server_host, server_port);
 	if (auto ec = co_await async_connect(executor_ptr->m_io_context, *server_socket_ptr, resolver_results, FLAGS_timeout); ec) {
 		spdlog::error("async_connect: {}, host: [{}] port: [{}]", ec.message(), server_host, server_port);
 		auto reply_buffers = reply_bad_request();
@@ -244,7 +245,7 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 		close(client_socket_ptr, server_socket_ptr);
 		co_return;
 	}
-	spdlog::info("Connected: [{}:{}]", server_host, server_port);
+	spdlog::debug("Connected: [{}:{}]", server_host, server_port);
 
 	static std::unordered_set<std::string> methods{"GET", "POST", "PUT", "DELETE", "HEAD"};
 	if (methods.contains(http_packet.method)) {
@@ -294,11 +295,16 @@ int main(int argc, char** argv) {
 		google::ParseCommandLineFlags(&argc, &argv, true);
 		if (FLAGS_open_file_log) {
 			auto logger = spdlog::basic_logger_mt("HTTP-PROXY", FLAGS_log);
-			logger->flush_on(spdlog::level::info);
+			logger->flush_on(spdlog::level::debug);
 			spdlog::set_default_logger(logger);
-			spdlog::set_level(spdlog::level::info);
+			if (FLAGS_log_level == 0)
+				spdlog::set_level(spdlog::level::debug);
 			// spdlog::flush_every(std::chrono::seconds(1));
 		}
+		if (FLAGS_log_level == 0)
+			spdlog::set_level(spdlog::level::debug);
+		else
+			spdlog::set_level(spdlog::level::info);
 		IoContextPool pool(FLAGS_threads);
 		std::jthread thd([&] { pool.start(); });
 		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
@@ -308,7 +314,7 @@ int main(int argc, char** argv) {
 		boost::asio::ip::tcp::endpoint endpoint = *resolver.resolve(FLAGS_host, std::to_string(FLAGS_port)).begin();
 		std::stringstream ss;
 		ss << endpoint;
-		spdlog::info("start accept at {} ...", ss.str());
+		spdlog::debug("start accept at {} ...", ss.str());
 		acceptor.open(endpoint.protocol());
 		acceptor.set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
 		acceptor.bind(endpoint);
