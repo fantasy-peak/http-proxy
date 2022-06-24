@@ -52,9 +52,9 @@ struct Reply {
 	}
 };
 
-Reply reply_bad_request() {
+Reply reply_bad_request(const std::string& version) {
 	Reply rep;
-	rep.status = "HTTP/1.0 400 Bad Request\r\n";
+	rep.status = fmt::format("{} 400 Bad Request\r\n", version);
 	rep.content = BadRequest;
 	rep.headers.resize(2);
 	rep.headers[0].name = "Content-Length";
@@ -77,9 +77,7 @@ void close(Args... args) {
 		sock_ptr->shutdown(boost::asio::ip::tcp::socket::shutdown_both, ec);
 		sock_ptr->close(ec);
 	};
-	[&](auto&&... args) {
-		(func(args), ...);
-	}(std::forward<Args>(args)...);
+	(func(args), ...);
 }
 
 std::vector<std::string> split(const std::string& s, const std::string& delimiter) {
@@ -96,14 +94,12 @@ std::vector<std::string> split(const std::string& s, const std::string& delimite
 
 template <typename... Args>
 void set_option(Args... args) {
-	[&](auto&&... args) {
-		auto func = [](auto& sock_ptr) {
-			boost::system::error_code ec;
-			sock_ptr->set_option(boost::asio::ip::tcp::no_delay(true), ec);
-			sock_ptr->set_option(boost::asio::socket_base::keep_alive(true), ec);
-		};
-		(func(args), ...);
-	}(std::forward<Args>(args)...);
+	auto func = [](auto& sock_ptr) {
+		boost::system::error_code ec;
+		sock_ptr->set_option(boost::asio::ip::tcp::no_delay(true), ec);
+		sock_ptr->set_option(boost::asio::socket_base::keep_alive(true), ec);
+	};
+	(func(args), ...);
 }
 
 struct HttpRequestPacket {
@@ -181,18 +177,24 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 	auto dynamic_string_buffer = boost::asio::dynamic_string_buffer(http_header_str, 8192);
 	if (auto [ec, _] = co_await async_read_until(*client_socket_ptr, dynamic_string_buffer, "\r\n\r\n"); ec) {
 		spdlog::error("[session] read http head: {}", ec.message());
-		auto reply_buffers = reply_bad_request();
-		co_await async_write(*client_socket_ptr, reply_buffers.to_buffers());
+		close(client_socket_ptr);
 		co_return;
 	}
 
 	spdlog::debug("{}", http_header_str);
 
 	auto http_packet = HttpRequestPacket(http_header_str);
+
+	auto reply_to_client = [&]<typename... Ts>(Ts&&... ts) -> folly::coro::Task<> {
+		auto reply_buffers = reply_bad_request(http_packet.version);
+		co_await async_write(*client_socket_ptr, reply_buffers.to_buffers());
+		if constexpr (sizeof...(Ts) != 0)
+			close(std::forward<Ts>(ts)...);
+	};
+
 	if (auto ret = http_packet.parse(); !ret) {
 		spdlog::error("[session] parse error");
-		auto reply_buffers = reply_bad_request();
-		co_await async_write(*client_socket_ptr, reply_buffers.to_buffers());
+		co_await reply_to_client(client_socket_ptr);
 		co_return;
 	}
 
@@ -212,22 +214,11 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 	auto str = fmt::format("{}//{}", split_uri_ret.at(0), http_packet.host);
 	boost::algorithm::replace_first(http_header_str, str, "");
 
-	boost::asio::ip::tcp::resolver resolver_{executor_ptr->m_io_context};
-	folly::coro::Baton baton;
-	boost::asio::ip::tcp::resolver::results_type resolver_results;
-	boost::system::error_code resolver_ec;
-	resolver_.async_resolve(server_host.c_str(), server_port.c_str(),
-		[&](boost::system::error_code ec, boost::asio::ip::tcp::resolver::results_type results) {
-			resolver_ec = std::move(ec);
-			resolver_results = std::move(results);
-			baton.post();
-		});
-	co_await baton;
+	boost::asio::ip::tcp::resolver resolver{executor_ptr->m_io_context};
+	auto [resolver_ec, resolver_results] = co_await async_resolve(resolver, server_host, server_port);
 	if (resolver_ec) {
 		spdlog::error("async_resolve: {} host: [{}] port: [{}]", resolver_ec.message(), server_host, server_port);
-		auto reply_buffers = reply_bad_request();
-		co_await async_write(*client_socket_ptr, reply_buffers.to_buffers());
-		close(client_socket_ptr, server_socket_ptr);
+		co_await reply_to_client(client_socket_ptr);
 		co_return;
 	}
 	spdlog::debug("resolver_results size: [{}]", resolver_results.size());
@@ -240,9 +231,7 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 	spdlog::debug("async_connect: [{}:{}]", server_host, server_port);
 	if (auto ec = co_await async_connect(executor_ptr->m_io_context, *server_socket_ptr, resolver_results, FLAGS_timeout); ec) {
 		spdlog::error("async_connect: {}, host: [{}] port: [{}]", ec.message(), server_host, server_port);
-		auto reply_buffers = reply_bad_request();
-		co_await async_write(*client_socket_ptr, reply_buffers.to_buffers());
-		close(client_socket_ptr, server_socket_ptr);
+		co_await reply_to_client(client_socket_ptr, server_socket_ptr);
 		co_return;
 	}
 	spdlog::debug("Connected: [{}:{}]", server_host, server_port);
@@ -252,9 +241,7 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 		if (auto [ec, _] = co_await async_write(*server_socket_ptr, boost::asio::buffer(http_header_str, http_header_str.size()));
 			ec) {
 			spdlog::error("[session]: forward data to [{}:{}] {}", server_host, server_port, ec.message());
-			auto reply_buffers = reply_bad_request();
-			co_await async_write(*client_socket_ptr, reply_buffers.to_buffers());
-			close(client_socket_ptr, server_socket_ptr);
+			co_await reply_to_client(client_socket_ptr, server_socket_ptr);
 			co_return;
 		}
 	}
@@ -262,17 +249,13 @@ folly::coro::Task<void> session(boost::asio::ip::tcp::socket sock, std::shared_p
 		auto success_msg = fmt::format("{} 200 Connection Established\r\nConnection: close\r\n\r\n", http_packet.version);
 		if (auto [ec, _] = co_await async_write(*client_socket_ptr, boost::asio::buffer(success_msg, success_msg.size())); ec) {
 			spdlog::error("[session] write connection_established {}", ec.message());
-			auto reply_buffers = reply_bad_request();
-			co_await async_write(*client_socket_ptr, reply_buffers.to_buffers());
-			close(client_socket_ptr, server_socket_ptr);
+			co_await reply_to_client(client_socket_ptr, server_socket_ptr);
 			co_return;
 		}
 	}
 	else {
 		spdlog::error("[session] not support {}", http_packet.method);
-		auto reply_buffers = reply_bad_request();
-		co_await async_write(*client_socket_ptr, reply_buffers.to_buffers());
-		close(client_socket_ptr, server_socket_ptr);
+		co_await reply_to_client(client_socket_ptr, server_socket_ptr);
 		co_return;
 	}
 
