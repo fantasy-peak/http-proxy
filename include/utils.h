@@ -7,8 +7,6 @@
 #include <folly/experimental/coro/Task.h>
 #include <boost/asio.hpp>
 #include <boost/asio/buffers_iterator.hpp>
-#include <boost/beast/core.hpp>
-#include <boost/beast/websocket.hpp>
 
 class Executor : public folly::Executor {
 public:
@@ -267,15 +265,34 @@ inline folly::coro::Task<boost::system::error_code> async_connect(boost::asio::i
 	co_return co_await ConnectAwaiter{io_context, socket, results_type, timeout};
 }
 
+class ResolveAwaiter {
+public:
+	ResolveAwaiter(boost::asio::ip::tcp::resolver& resolver, std::string& server_host, std::string& server_port)
+		: m_resolver(resolver)
+		, m_server_host(server_host)
+		, m_server_port(server_port) {
+	}
+
+	bool await_ready() const noexcept { return false; }
+	void await_suspend(std::coroutine_handle<> handle) {
+		m_resolver.async_resolve(m_server_host.c_str(), m_server_port.c_str(),
+			[this, handle](boost::system::error_code ec, boost::asio::ip::tcp::resolver::results_type results) {
+				m_results_type = std::move(results);
+				m_ec = std::move(ec);
+				handle.resume();
+			});
+	}
+	auto await_resume() noexcept { return std::make_tuple(std::move(m_ec), std::move(m_results_type)); }
+
+private:
+	boost::asio::ip::tcp::resolver& m_resolver;
+	std::string& m_server_host;
+	std::string& m_server_port;
+	boost::system::error_code m_ec{};
+	boost::asio::ip::tcp::resolver::results_type m_results_type;
+};
+
 inline folly::coro::Task<std::tuple<boost::system::error_code, boost::asio::ip::tcp::resolver::results_type>> async_resolve(
 	boost::asio::ip::tcp::resolver& resolver, std::string& server_host, std::string& server_port) {
-	folly::coro::Baton baton;
-	std::tuple<boost::system::error_code, boost::asio::ip::tcp::resolver::results_type> result;
-	resolver.async_resolve(server_host.c_str(), server_port.c_str(),
-		[&](boost::system::error_code ec, boost::asio::ip::tcp::resolver::results_type results) {
-			result = std::make_tuple(std::move(ec), std::move(results));
-			baton.post();
-		});
-	co_await baton;
-	co_return result;
+	co_return co_await ResolveAwaiter{resolver, server_host, server_port};
 }
