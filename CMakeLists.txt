@@ -19,7 +19,7 @@ endif()
 set(XREPO_PACKAGE_VERBOSE ON)
 set(XREPO_BOOTSTRAP_XMAKE OFF)
 set(XREPO_BUILD_PARALLEL_JOBS 12)
-set(XMAKE_RELEASE_LATEST v2.6.7)
+set(XMAKE_RELEASE_LATEST v2.6.8)
 
 include(${CMAKE_BINARY_DIR}/xrepo.cmake)
 
@@ -27,15 +27,11 @@ if(NOT EXISTS "$ENV{HOME}/.xmake/repositories/my_private_repo/xmake.lua")
     message(STATUS "add my_private_repo https://github.com/fantasy-peak/xmake-repo.git")
     execute_process(COMMAND xmake repo -a -g my_private_repo https://github.com/fantasy-peak/xmake-repo.git)
 endif()
-
 #----------------------------------------------------------------------------------
-
 xrepo_package("fmt")
 xrepo_package("spdlog")
 xrepo_package("folly" DEPS "conan::libiberty/9.1.0" "boost" "openssl" "libevent" "gflags" "glog" "fmt" "zlib" "double-conversion" "bzip2" "lz4" "zstd")
-
 #-----------------------------------------------------------------------------------
-
 include_directories(include)
 
 add_executable(http-proxy
